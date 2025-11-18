@@ -1,0 +1,47 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container-card col-md-8 mx-auto">
+  <h2 class="h5 mb-3">Edit Car — #{{ car.id }}</h2>
+  <form method="post" enctype="multipart/form-data">
+    <div class="mb-3">
+      <label class="form-label">Brand</label>
+      <input name="brand" class="form-control" value="{{ car.brand }}" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Model</label>
+      <input name="model" class="form-control" value="{{ car.model }}" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Year</label>
+      <input name="year" type="number" class="form-control" value="{{ car.year }}" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Price (PHP)</label>
+      <input name="price" type="number" step="0.01" class="form-control" value="{{ car.price }}" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Status</label>
+      <select name="status" class="form-select" required>
+        <option {% if car.status=='Available' %}selected{% endif %}>Available</option>
+        <option {% if car.status=='Sold' %}selected{% endif %}>Sold</option>
+      </select>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Current Image</label><br>
+      {% if car.image_filename %}
+        <img src="{{ url_for('static', filename='uploads/' ~ car.image_filename) }}" style="height:120px; object-fit:cover;">
+      {% else %}
+        <div class="text-muted small">No image</div>
+      {% endif %}
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Replace image (optional)</label>
+      <input class="form-control" type="file" name="image" accept="image/*">
+    </div>
+    <div class="d-flex gap-2">
+      <button class="btn btn-primary btn-primary-custom" type="submit">Update</button>
+      <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

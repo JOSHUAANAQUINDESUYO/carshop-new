@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cart — Carshop</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+  <div class="container py-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h1 class="h4">Your Cart</h1>
+      <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">Continue Shopping</a>
+    </div>
+
+    {% if not items %}
+      <div class="alert alert-info">Your cart is empty.</div>
+    {% else %}
+      <table class="table">
+        <thead><tr><th>Image</th><th>Car</th><th>Price</th><th></th></tr></thead>
+        <tbody>
+          {% set total = 0 %}
+          {% for car in items %}
+            {% set total = total + car['price'] %}
+            <tr>
+              <td>
+                {% if car['image_filename'] %}
+                  <img src="{{ url_for('static', filename='uploads/' ~ car['image_filename']) }}" style="height:60px; object-fit:cover;">
+                {% endif %}
+              </td>
+              <td>{{ car['brand'] }} {{ car['model'] }}</td>
+              <td>{{ "%.2f"|format(car['price']) }}</td>
+              <td>
+                <form method="post" action="{{ url_for('remove_from_cart', car_id=car['id']) }}">
+                  <button class="btn btn-sm btn-danger">Remove</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="d-flex justify-content-between align-items-center">
+        <div><strong>Total:</strong> {{ "%.2f"|format(total) }}</div>
+        <form method="post" action="{{ url_for('checkout') }}">
+          <button class="btn btn-primary">Checkout & Buy</button>
+        </form>
+      </div>
+    {% endif %}
+  </div>
+</body>
+</html>

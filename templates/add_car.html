@@ -1,0 +1,39 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container-card col-md-8 mx-auto">
+  <h2 class="h5 mb-3">Add New Car</h2>
+  <form method="post" enctype="multipart/form-data">
+    <div class="mb-3">
+      <label class="form-label">Brand</label>
+      <input name="brand" class="form-control" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Model</label>
+      <input name="model" class="form-control" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Year</label>
+      <input name="year" type="number" class="form-control" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Price (PHP)</label>
+      <input name="price" type="number" step="0.01" class="form-control" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Status</label>
+      <select name="status" class="form-select" required>
+        <option>Available</option>
+        <option>Sold</option>
+      </select>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Image (optional)</label>
+      <input class="form-control" type="file" name="image" accept="image/*">
+    </div>
+    <div class="d-flex gap-2">
+      <button class="btn btn-primary btn-primary-custom" type="submit">Save</button>
+      <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,69 @@
+/* Professional color scheme: deep navy header, light gray body, muted footer */
+:root{
+  --navy: #0b2545;
+  --accent: #1464a0;
+  --light: #f4f6f8;
+  --muted: #667085;
+  --card: #ffffff;
+}
+
+body{
+  background: var(--light);
+  color: #0f1724;
+  font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+  margin:0;
+}
+
+.app-header{
+  background: linear-gradient(90deg, var(--navy), var(--accent));
+  color: white;
+  padding: 18px 24px;
+}
+
+.app-footer{
+  background: #0f1724;
+  color: #cbd5e1;
+  padding: 14px 24px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.container-card{
+  background: var(--card);
+  border-radius: 12px;
+  box-shadow: 0 6px 18px rgba(11,37,69,0.08);
+  padding: 20px;
+  margin-top: 18px;
+}
+
+.brand-title{
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.btn-primary-custom{
+  background: var(--navy);
+  border-color: var(--navy);
+}
+
+.table thead th{
+  background: #eef4fb;
+}
+
+.status-Available{
+  color: #064e3b;
+  background:#d1fae5;
+  padding:6px 10px;
+  border-radius:999px;
+  font-weight:600;
+}
+
+.status-Sold{
+  color: #7f1d1d;
+  background:#fee2e2;
+  padding:6px 10px;
+  border-radius:999px;
+  font-weight:600;
+}
+
+footer small { color: #94a3b8; }
