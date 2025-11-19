@@ -53,6 +53,9 @@ def init_db():
     col_names = [c['name'] for c in cols]
     if 'image_filename' not in col_names:
         conn.execute("ALTER TABLE cars ADD COLUMN image_filename TEXT;")
+    # add stock column (default 1) if missing
+    if 'stock' not in col_names:
+        conn.execute("ALTER TABLE cars ADD COLUMN stock INTEGER NOT NULL DEFAULT 1;")
 
     # MIGRATE users table: add role if missing and set sensible defaults
     user_cols = conn.execute("PRAGMA table_info(users);").fetchall()
@@ -81,17 +84,22 @@ def init_db():
     # insert sample cars if none exist (keep existing behavior)
     cur = conn.execute("SELECT COUNT(*) AS cnt FROM cars").fetchone()
     if cur['cnt'] == 0:
-        conn.execute("INSERT INTO cars (brand, model, year, price, status) VALUES (?, ?, ?, ?, ?)",
-                     ("Toyota", "Corolla", 2018, 450000.00, "Available"))
-        conn.execute("INSERT INTO cars (brand, model, year, price, status) VALUES (?, ?, ?, ?, ?)",
-                     ("Honda", "Civic", 2019, 550000.00, "Sold"))
+        # explicitly include stock
+        conn.execute("INSERT INTO cars (brand, model, year, price, status, stock) VALUES (?, ?, ?, ?, ?, ?)",
+                     ("Toyota", "Corolla", 2018, 450000.00, "Available", 3))
+        conn.execute("INSERT INTO cars (brand, model, year, price, status, stock) VALUES (?, ?, ?, ?, ?, ?)",
+                     ("Honda", "Civic", 2019, 550000.00, "Available", 2))
 
-    # ensure orders and order_items tables exist
+    # ensure orders and order_items tables exist (orders now includes customer fields)
     conn.execute("""CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
         total REAL NOT NULL,
         created_at TEXT NOT NULL,
+        customer_name TEXT,
+        customer_address TEXT,
+        customer_phone TEXT,
+        customer_email TEXT,
         FOREIGN KEY(user_id) REFERENCES users(id)
     );""")
     conn.execute("""CREATE TABLE IF NOT EXISTS order_items (
@@ -99,9 +107,24 @@ def init_db():
         order_id INTEGER NOT NULL,
         car_id INTEGER NOT NULL,
         price REAL NOT NULL,
+        -- quantity added for orders: default 1
+        quantity INTEGER NOT NULL DEFAULT 1,
         FOREIGN KEY(order_id) REFERENCES orders(id),
         FOREIGN KEY(car_id) REFERENCES cars(id)
     );""")
+
+    # ensure order_items.quantity exists for older DBs
+    oi_cols = conn.execute("PRAGMA table_info(order_items);").fetchall()
+    oi_col_names = [c['name'] for c in oi_cols]
+    if 'quantity' not in oi_col_names:
+        conn.execute("ALTER TABLE order_items ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1;")
+
+    # ensure orders table has customer columns for older DBs
+    order_cols = conn.execute("PRAGMA table_info(orders);").fetchall()
+    order_col_names = [c['name'] for c in order_cols]
+    for col in ('customer_name', 'customer_address', 'customer_phone', 'customer_email'):
+        if col not in order_col_names:
+            conn.execute(f"ALTER TABLE orders ADD COLUMN {col} TEXT;")
 
     conn.commit()
     conn.close()
@@ -125,8 +148,8 @@ def is_safe_url(target):
 # require login for most endpoints (user will be asked to log in first)
 @app.before_request
 def require_login():
-    # allow static files and the login/logout/register endpoints
-    allowed_endpoints = {'login', 'logout', 'static', 'register'}
+    # allow static files and the login/logout/register endpoints and public browsing/cart actions
+    allowed_endpoints = {'login', 'logout', 'static', 'register', 'index', 'add_to_cart', 'view_cart', 'cart'}
     # request.endpoint may be None for some cases (ignore)
     if request.endpoint is None:
         return
@@ -155,7 +178,8 @@ def index():
     conn = get_db_connection()
     cars = conn.execute("SELECT * FROM cars ORDER BY id DESC").fetchall()
     conn.close()
-    return render_template('index.html', cars=cars, username=session.get('username'))
+    # pass role so templates can show admin controls (stock input, etc.)
+    return render_template('index.html', cars=cars, username=session.get('username'), role=session.get('role'))
 
 @app.route('/add', methods=('GET','POST'))
 @roles_required('admin', 'superadmin')
@@ -167,6 +191,11 @@ def add_car():
         price = request.form['price'].strip()
         status = request.form['status'].strip()
         image = request.files.get('image')
+        stock_val = request.form.get('stock', '1').strip()
+        try:
+            stock_i = max(0, int(stock_val))
+        except Exception:
+            stock_i = 1
 
         if not (brand and model and year and price and status):
             flash('All fields are required.', 'danger')
@@ -192,15 +221,16 @@ def add_car():
 
             conn = get_db_connection()
             conn.execute(
-                "INSERT INTO cars (brand, model, year, price, status, image_filename) VALUES (?, ?, ?, ?, ?, ?)",
-                (brand, model, year_i, price_f, status, image_filename)
+                "INSERT INTO cars (brand, model, year, price, status, image_filename, stock) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (brand, model, year_i, price_f, status, image_filename, stock_i)
             )
             conn.commit()
             conn.close()
             flash('Car added successfully.', 'success')
             return redirect(url_for('index'))
 
-    return render_template('add_car.html')
+    # provide a default stock value for the add form
+    return render_template('add_car.html', default_stock=1)
 
 @app.route('/edit/<int:car_id>', methods=('GET','POST'))
 @roles_required('admin', 'superadmin')
@@ -230,6 +260,12 @@ def edit_car(car_id):
                 flash('Year must be an integer and Price must be a number.', 'danger')
                 return render_template('edit_car.html', car=car)
 
+            stock_val = request.form.get('stock', car['stock'] if car and 'stock' in car.keys() else 1)
+            try:
+                stock_i = max(0, int(stock_val))
+            except Exception:
+                stock_i = 1
+
             new_image_filename = car['image_filename']
             if image and image.filename:
                 if allowed_file(image.filename):
@@ -251,8 +287,8 @@ def edit_car(car_id):
                     return render_template('edit_car.html', car=car)
 
             conn.execute(
-                "UPDATE cars SET brand=?, model=?, year=?, price=?, status=?, image_filename=? WHERE id=?",
-                (brand, model, year_i, price_f, status, new_image_filename, car_id)
+                "UPDATE cars SET brand=?, model=?, year=?, price=?, status=?, image_filename=?, stock=? WHERE id=?",
+                (brand, model, year_i, price_f, status, new_image_filename, stock_i, car_id)
             )
             conn.commit()
             conn.close()
@@ -368,112 +404,270 @@ def logout():
 
 # session cart helpers
 def get_cart():
-	if 'cart' not in session:
-		session['cart'] = []
-	return session['cart']
+    # cart stored as mapping of str(car_id) -> int(quantity)
+    if 'cart' not in session or not isinstance(session['cart'], dict):
+        session['cart'] = {}
+    return session['cart']
 
-def add_to_cart_session(car_id):
-	cart = get_cart()
-	if car_id not in cart:
-		cart.append(car_id)
-		session['cart'] = cart
+def add_to_cart_session(car_id, qty=1):
+    cart = get_cart()
+    key = str(car_id)
+    try:
+        q = int(qty)
+    except Exception:
+        q = 1
+    if q < 1:
+        return
+    cart[key] = cart.get(key, 0) + q
+    session['cart'] = cart
 
-def remove_from_cart_session(car_id):
-	cart = get_cart()
-	if car_id in cart:
-		cart.remove(car_id)
-		session['cart'] = cart
+def remove_from_cart_session(car_id, qty=1):
+    cart = get_cart()
+    key = str(car_id)
+    if key in cart:
+        try:
+            q = int(qty)
+        except Exception:
+            q = 1
+        if q < 1:
+            q = 1
+        if cart[key] > q:
+            cart[key] -= q
+        else:
+            cart.pop(key)
+        session['cart'] = cart
 
-# add_to_cart route (customers only)
+# add_to_cart route (allow anonymous adding; quantity optional)
 @app.route('/add_to_cart/<int:car_id>', methods=('POST',))
-@roles_required('customer')
 def add_to_cart(car_id):
-	conn = get_db_connection()
-	car = conn.execute("SELECT * FROM cars WHERE id = ?", (car_id,)).fetchone()
-	conn.close()
-	if car is None:
-		flash('Car not found.', 'danger')
-		return redirect(url_for('index'))
-	if car['status'].lower() != 'available':
-		flash('Car is not available.', 'warning')
-		return redirect(url_for('index'))
-	add_to_cart_session(car_id)
-	flash('Added to cart.', 'success')
-	return redirect(url_for('index'))
+    # optional quantity in form (default 1)
+    qty = request.form.get('quantity', 1)
+    try:
+        qty_i = max(1, int(qty))
+    except Exception:
+        qty_i = 1
+
+    conn = get_db_connection()
+    car = conn.execute("SELECT * FROM cars WHERE id = ?", (car_id,)).fetchone()
+    conn.close()
+    if car is None:
+        flash('Car not found.', 'danger')
+        return redirect(url_for('index'))
+
+    # check stock availability
+    cart = get_cart()
+    existing_in_cart = cart.get(str(car_id), 0)
+    available = int(car['stock']) if car['stock'] is not None else 0
+    if available <= 0:
+        flash('Car is out of stock.', 'warning')
+        return redirect(url_for('index'))
+    if existing_in_cart + qty_i > available:
+        flash(f'Cannot add {qty_i}. Only {available - existing_in_cart} left.', 'warning')
+        return redirect(url_for('index'))
+
+    add_to_cart_session(car_id, qty_i)
+    flash(f'Added {qty_i} to cart.', 'success')
+    return redirect(url_for('index'))
 
 # remove from cart
 @app.route('/remove_from_cart/<int:car_id>', methods=('POST',))
 @roles_required('customer')
 def remove_from_cart(car_id):
-	remove_from_cart_session(car_id)
-	flash('Removed from cart.', 'info')
-	return redirect(url_for('view_cart'))
+    # optional quantity to remove, default 1; if 'all' passed, remove entire entry
+    qty = request.form.get('quantity')
+    if qty == 'all':
+        remove_from_cart_session(car_id, 10**9)
+    else:
+        try:
+            qty_i = int(qty) if qty is not None else 1
+        except Exception:
+            qty_i = 1
+        remove_from_cart_session(car_id, qty_i)
+    flash('Updated cart.', 'info')
+    return redirect(url_for('view_cart'))
 
 # view cart
 @app.route('/cart')
 @roles_required('customer')
 def view_cart():
-	cart = get_cart()
-	if not cart:
-		items = []
-	else:
-		placeholders = ','.join('?' for _ in cart)
-		conn = get_db_connection()
-		items = conn.execute(f"SELECT * FROM cars WHERE id IN ({placeholders})", tuple(cart)).fetchall()
-		conn.close()
-	return render_template('cart.html', items=items)
+    cart = get_cart()
+    if not cart:
+        items = []
+        total = 0.0
+    else:
+        ids = [int(k) for k in cart.keys()]
+        placeholders = ','.join('?' for _ in ids)
+        conn = get_db_connection()
+        rows = conn.execute(f"SELECT * FROM cars WHERE id IN ({placeholders})", tuple(ids)).fetchall()
+        conn.close()
+        # attach quantity from session and flatten row fields into a dict so templates can use item.price etc.
+        items = []
+        total = 0.0
+        for r in rows:
+            q = cart.get(str(r['id']), 0)
+            item = {
+                'id': r['id'],
+                'brand': r['brand'],
+                'model': r['model'],
+                'year': r['year'],
+                'price': r['price'],
+                'status': r['status'],
+                'image_filename': r['image_filename'],
+                'stock': r['stock'],
+                'quantity': q
+            }
+            items.append(item)
+            try:
+                total += float(r['price']) * int(q)
+            except Exception:
+                pass
+    return render_template('cart.html', items=items, total=total)
 
 # checkout - create order, mark cars as Sold
 @app.route('/checkout', methods=('POST',))
 @roles_required('customer')
 def checkout():
-	cart = get_cart()
-	if not cart:
-		flash('Cart is empty.', 'danger')
-		return redirect(url_for('view_cart'))
+    cart = get_cart()
+    if not cart:
+        flash('Cart is empty.', 'danger')
+        return redirect(url_for('view_cart'))
 
-	conn = get_db_connection()
-	# fetch current car entries and ensure availability
-	placeholders = ','.join('?' for _ in cart)
-	cars = conn.execute(f"SELECT * FROM cars WHERE id IN ({placeholders})", tuple(cart)).fetchall()
-	# ensure all requested cars still available
-	for c in cars:
-		if c['status'].lower() != 'available':
-			conn.close()
-			flash(f"Car {c['brand']} {c['model']} is not available.", 'danger')
-			return redirect(url_for('view_cart'))
-	# compute total
-	total = sum(c['price'] for c in cars)
-	created_at = datetime.utcnow().isoformat()
-	# insert order
-	cur = conn.execute("INSERT INTO orders (user_id, total, created_at) VALUES (?, ?, ?)",
-					   (session['user_id'], total, created_at))
-	order_id = cur.lastrowid
-	# insert order items and mark cars sold
-	for c in cars:
-		conn.execute("INSERT INTO order_items (order_id, car_id, price) VALUES (?, ?, ?)",
-					 (order_id, c['id'], c['price']))
-		conn.execute("UPDATE cars SET status = 'Sold' WHERE id = ?", (c['id'],))
-	conn.commit()
-	conn.close()
-	# clear cart
-	session.pop('cart', None)
-	flash('Purchase successful. Order created.', 'success')
-	return render_template('order_success.html', order_id=order_id, items=cars, total=total)
+    # collect customer info from form (optional fields)
+    customer_name = request.form.get('customer_name', '').strip()
+    customer_address = request.form.get('customer_address', '').strip()
+    customer_phone = request.form.get('customer_phone', '').strip()
+    customer_email = request.form.get('customer_email', '').strip()
+
+    conn = get_db_connection()
+    ids = [int(k) for k in cart.keys()]
+    placeholders = ','.join('?' for _ in ids)
+    cars = conn.execute(f"SELECT * FROM cars WHERE id IN ({placeholders})", tuple(ids)).fetchall()
+    # ensure all requested cars still available (by stock)
+    for c in cars:
+        available = int(c['stock']) if c['stock'] is not None else 0
+        q = int(cart.get(str(c['id']), 0))
+        if available < q:
+            conn.close()
+            flash(f"Only {available} of {c['brand']} {c['model']} available, you requested {q}.", 'danger')
+            return redirect(url_for('view_cart'))
+    # compute total using quantities
+    total = 0.0
+    for c in cars:
+        q = int(cart.get(str(c['id']), 0))
+        total += c['price'] * q
+
+    created_at = datetime.utcnow().isoformat()
+    # insert order with customer info
+    cur = conn.execute(
+        "INSERT INTO orders (user_id, total, created_at, customer_name, customer_address, customer_phone, customer_email) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (session['user_id'], total, created_at, customer_name, customer_address, customer_phone, customer_email)
+    )
+    order_id = cur.lastrowid
+    # insert order items and decrement stock; set status='Sold' only when stock hits 0
+    for c in cars:
+        q = int(cart.get(str(c['id']), 0))
+        conn.execute("INSERT INTO order_items (order_id, car_id, price, quantity) VALUES (?, ?, ?, ?)",
+                     (order_id, c['id'], c['price'], q))
+        new_stock = max(0, int(c['stock'] if c['stock'] is not None else 0) - q)
+        new_status = 'Sold' if new_stock <= 0 else 'Available'
+        conn.execute("UPDATE cars SET stock = ?, status = ? WHERE id = ?", (new_stock, new_status, c['id']))
+    conn.commit()
+
+    # prepare flattened items for success page (include quantity and image_filename)
+    items_with_qty = []
+    for c in cars:
+        items_with_qty.append({
+            'id': c['id'],
+            'brand': c['brand'],
+            'model': c['model'],
+            'year': c['year'],
+            'price': c['price'],
+            'status': c['status'],
+            'image_filename': c['image_filename'],
+            'quantity': int(cart.get(str(c['id']), 0))
+        })
+
+    conn.close()
+    # clear cart
+    session.pop('cart', None)
+    flash('Purchase successful. Order created.', 'success')
+    return render_template(
+        'order_success.html',
+        order_id=order_id,
+        items=items_with_qty,
+        total=total,
+        customer_name=customer_name,
+        customer_address=customer_address,
+        customer_phone=customer_phone,
+        customer_email=customer_email
+    )
+
+# new route: delete an order (restore stock and remove order history)
+@app.route('/delete_order/<int:order_id>', methods=('POST',))
+@login_required
+def delete_order(order_id):
+    conn = get_db_connection()
+    order = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+    if not order:
+        conn.close()
+        flash('Order not found.', 'danger')
+        return redirect(url_for('my_orders'))
+    # only owner or superadmin can delete
+    if session.get('user_id') != order['user_id'] and session.get('role') != 'superadmin':
+        conn.close()
+        flash('Forbidden: cannot delete this order.', 'danger')
+        return redirect(url_for('my_orders'))
+
+    # restore stock for each order_item
+    items = conn.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,)).fetchall()
+    for it in items:
+        car_id = it['car_id']
+        qty = int(it['quantity'])
+        # fetch current stock
+        car = conn.execute("SELECT stock FROM cars WHERE id = ?", (car_id,)).fetchone()
+        if car:
+            cur_stock = int(car['stock'] if car['stock'] is not None else 0)
+            new_stock = cur_stock + qty
+            new_status = 'Available' if new_stock > 0 else 'Sold'
+            conn.execute("UPDATE cars SET stock = ?, status = ? WHERE id = ?", (new_stock, new_status, car_id))
+
+    # delete order items and order record
+    conn.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
+    conn.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+    conn.commit()
+    conn.close()
+    flash('Order history deleted and stock restored.', 'info')
+    return redirect(url_for('my_orders'))
 
 # view my orders
 @app.route('/my_orders')
 @login_required
 def my_orders():
-	conn = get_db_connection()
-	orders = conn.execute("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC", (session['user_id'],)).fetchall()
-	# fetch items for each order
-	order_list = []
-	for o in orders:
-		items = conn.execute("SELECT oi.*, c.brand, c.model FROM order_items oi JOIN cars c ON oi.car_id = c.id WHERE oi.order_id = ?", (o['id'],)).fetchall()
-		order_list.append({'order': o, 'items': items})
-	conn.close()
-	return render_template('my_orders.html', orders=order_list)
+    conn = get_db_connection()
+    orders = conn.execute("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC", (session['user_id'],)).fetchall()
+    # fetch items for each order
+    order_list = []
+    for o in orders:
+        # include image_filename and quantity from order_items
+        rows = conn.execute("""SELECT oi.*, c.brand, c.model, c.image_filename
+                               FROM order_items oi
+                               JOIN cars c ON oi.car_id = c.id
+                               WHERE oi.order_id = ?""", (o['id'],)).fetchall()
+        # flatten each row to a dict with expected keys for templates
+        items = []
+        for it in rows:
+            items.append({
+                'order_item_id': it['id'],
+                'car_id': it['car_id'],
+                'price': it['price'],
+                'quantity': it.get('quantity', 1) if isinstance(it, dict) else it['quantity'],
+                'brand': it['brand'],
+                'model': it['model'],
+                'image_filename': it['image_filename']
+            })
+        order_list.append({'order': o, 'items': items})
+    conn.close()
+    return render_template('my_orders.html', orders=order_list)
 
 if __name__ == '__main__':
     init_db()
